@@ -1,0 +1,86 @@
+#!/bin/bash
+
+# Copyright (c) 2017 SUSE Linux GmbH
+#
+# This file is part of cloud-netconfig.
+#
+# cloud-netconfig is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# cloud-netconfig is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+
+API_VERSION="2016-01-01"
+METADATA_ENDPOINT_IP="100.100.100.200"
+METADATA_URL_BASE="http:///${METADATA_ENDPOINT_IP}/${API_VERSION}"
+METADATA_URL_IFACE="${METADATA_URL_BASE}/meta-data/network/interfaces/macs"
+CURL="curl"
+
+
+# -------------------------------------------------------------------
+# check whether given URL is available
+#
+check_url()
+{
+    test -z "$1" && return 1
+    $CURL -Ss "$1" | grep 'network'>/dev/null
+    return $?
+}
+
+# -------------------------------------------------------------------
+# assign provided variable with value from metadata URL
+# refresh token if necessary
+#
+set_from_metadata()
+{
+    test -z "$1" -o -z "$2" && return 1
+
+    eval ${1}=\"$($CURL "$2" 2>/dev/null | tr -d '[]"' | tr ',' '\n')\"
+    return 0
+}
+
+# -------------------------------------------------------------------
+# get IPv4 address from the EC2 meta data server and return them
+#
+get_ipv4_addresses_from_metadata()
+{
+    local addr count=0 hwaddr="$1" prefixlen
+    test -z "$hwaddr" && return
+
+    # sometimes the entry for a newly attached NIC is not there yet, retry
+    # a few times if necessary
+    local cidr_block local_ips attempts=0
+    while ! set_from_metadata cidr_block "${METADATA_URL_IFACE}/${hwaddr}/vswitch-cidr-block" ; do
+        if [[ $attempts -ge 5 ]]; then
+            log "Could not get metadata for nic $hwaddr"
+            return
+        fi
+        attempts=$((attempts+1))
+        sleep 1
+    done
+
+    set_from_metadata local_ips "${METADATA_URL_IFACE}/${hwaddr}/private-ipv4s"
+    #local_ips=$(echo $local_ips | tr -d '[]"' | tr ',' '\n')
+    local prefixlen=${cidr_block##*/}
+    for addr in ${local_ips} ; do
+        [[ $count -ge 1 ]] && echo -n " "
+        echo -n "${addr}/${prefixlen}"
+        count=$((count+1))
+    done
+}
+
+# -------------------------------------------------------------------
+# check if metadata server is available
+#
+metadata_available()
+{
+    check_url "${METADATA_URL_BASE}/meta-data/"
+    return $?
+}
+
